@@ -55,7 +55,7 @@ const STORE_KEY="coop-compass-my-profile-v2";
 const DATA_URL="./data/catalog.json";
 const PAGES=["home","catalog","profile"];
 let catalog=[], catalogMeta={}, page="home", guest=blank(), profiles=[blank(),blank()];
-let invited=false, invitation=null, matches=[], matchLimit=12, catalogLimit=24, shownTag="";
+let invited=false, invitation=null, sharedMatch=false, matches=[], matchLimit=12, catalogLimit=24, shownTag="";
 let cloud=null, cloudUser=null, authMode="login", toastTimer=0, saveTimer=0;
 const config=window.COOP_CONFIG||{};
 const cloudConfigured=!!(config.supabaseUrl && config.supabasePublishableKey);
@@ -129,14 +129,26 @@ function setPage(next){
 }
 function parseInvite(){
   const hash=location.hash;
-  if(!hash.startsWith("#invite="))return;
+  const isMatch=hash.startsWith("#match=");
+  if(!hash.startsWith("#invite=")&&!isMatch)return;
   try{
-    const encoded=hash.slice(8);
+    const encoded=hash.slice(isMatch?7:8);
     if(encoded.length>10000)throw Error("too long");
     const binary=atob(encoded.replace(/-/g,"+").replace(/_/g,"/"));
     const bytes=Uint8Array.from(binary,c=>c.charCodeAt(0));
     const data=JSON.parse(new TextDecoder().decode(bytes));
-    if(data.v!==1||typeof data.profile!=="object")throw Error("version");
+    if(data.v!==1)throw Error("version");
+    if(isMatch){
+      if(!Array.isArray(data.profiles)||data.profiles.length!==2)throw Error("invalid matching");
+      profiles=[cleanProfile(data.profiles[0]),cleanProfile(data.profiles[1])];
+      sharedMatch=true;
+      el("pair-mode").value=["online","local","any"].includes(data.mode)?data.mode:"any";
+      el("invite-notice").textContent="Получена подборка для двух игроков. Ниже можно изменить предпочтения и пересчитать результат.";
+      el("invite-notice").classList.remove("hidden");
+      history.replaceState(null,"",location.pathname+location.search);
+      return;
+    }
+    if(typeof data.profile!=="object")throw Error("version");
     invitation=cleanProfile(data.profile);invitation.favorites=[];
     invited=true;
     el("invite-notice").textContent="Тебя пригласил "+(invitation.name||"друг")+". Его предпочтения уже заполнены — добавь свои во второй анкете и нажми «Подобрать игры».";
@@ -144,11 +156,16 @@ function parseInvite(){
     history.replaceState(null,"",location.pathname+location.search);
   }catch{toast("Не удалось открыть приглашение. Попроси друга отправить ссылку заново.");}
 }
+function encodePacket(value){
+  const binary=Array.from(new TextEncoder().encode(JSON.stringify(value)),b=>String.fromCharCode(b)).join("");
+  return btoa(binary).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
+}
+function shareableProfile(profile){return {name:trimName(profile.name),prefs:cleanPrefs(profile.prefs)};}
 function makeLink(profile){
-  const safe={v:1,profile:{name:trimName(profile.name),prefs:cleanPrefs(profile.prefs)}};
-  const binary=Array.from(new TextEncoder().encode(JSON.stringify(safe)),b=>String.fromCharCode(b)).join("");
-  const code=btoa(binary).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
-  return location.origin+location.pathname+"#invite="+code;
+  return location.origin+location.pathname+"#invite="+encodePacket({v:1,profile:shareableProfile(profile)});
+}
+function makeMatchLink(){
+  return location.origin+location.pathname+"#match="+encodePacket({v:1,profiles:profiles.map(shareableProfile),mode:el("pair-mode").value});
 }
 async function copyText(text){
   try{await navigator.clipboard.writeText(text);toast("Ссылка скопирована!");}
@@ -288,7 +305,7 @@ async function loadCatalog(){
     toast("Не удалось загрузить каталог игр.");
   }
   renderCatalog();
-  if(!el("match-section").classList.contains("hidden"))startMatch();
+  if(sharedMatch || !el("match-section").classList.contains("hidden"))startMatch();
 }
 async function initCloud(){
   if(!cloudConfigured)return;
@@ -387,10 +404,7 @@ function bindEvents(){
   el("invite-btn").addEventListener("click",()=>copyText(makeLink(invited?profiles[1]:profiles[0])));
   el("find-btn").addEventListener("click",startMatch);
   el("match-more").addEventListener("click",()=>{matchLimit+=12;renderMatches();});
-  el("match-share").addEventListener("click",()=>{
-    const scores=matches.slice(0,5).map(x=>x.game.name).join(", ");
-    copyText("Наш Coop Compass подобрал нам: "+scores+"\nПопробуй тоже: "+location.origin+location.pathname);
-  });
+  el("match-share").addEventListener("click",()=>copyText(makeMatchLink()));
   for(const id of ["catalog-search","catalog-tag","catalog-mode","catalog-sort"]){
     el(id).addEventListener(id==="catalog-search"?"input":"change",()=>{catalogLimit=24;renderCatalog();});
   }
