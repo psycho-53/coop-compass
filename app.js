@@ -155,18 +155,26 @@ async function copyText(text){
   catch{window.prompt("Скопируй ссылку:",text);}
 }
 function modeMatches(game,mode){
-  if(mode==="online")return game.mode_online!==false;
-  if(mode==="local")return game.mode_local!==false;
+  if(mode==="online")return game.mode_online===true;
+  if(mode==="local")return game.mode_local===true;
   return true;
 }
 function gameTags(game){
-  return new Set([...(game.tags||[]),...(game.genres||[])].map(x=>String(x).toLowerCase()));
+  const tags=new Set([...(game.tags||[]),...(game.genres||[])].map(x=>String(x).toLowerCase()));
+  if(tags.has("rogue-like")||tags.has("action roguelike"))tags.add("roguelike");
+  if(tags.has("base-building"))tags.add("base building");
+  if(tags.has("first-person"))tags.add("fps");
+  if(tags.has("building"))tags.add("base building");
+  if(tags.has("walking simulator"))tags.add("exploration");
+  if(tags.has("turn-based"))tags.add("turn-based strategy");
+  if(tags.has("real time strategy"))tags.add("rts");
+  return tags;
 }
 function individualScore(profile,game){
   const selected=Object.entries(profile.prefs);
   if(!selected.length)return 50;
   const tags=gameTags(game);
-  let score=50, hits=0, dislikes=0;
+  let score=game.tags?.length || game.genres?.length ? 40 : 27, hits=0, dislikes=0;
   for(const [key,val] of selected){
     if(tags.has(key.toLowerCase())){
       if(val===1){hits++;score+=Math.max(8,16-Math.max(0,hits-1)*1.3);}
@@ -212,6 +220,10 @@ function populateCatalogFilter(){
   select.innerHTML='<option value="">Все жанры и темы</option>'+TAXONOMY.flatMap(g=>g[1]).map(t=>'<option value="'+esc(t[0])+'">'+esc(t[1])+'</option>').join("");
 }
 function normalizedString(str){return String(str||"").toLocaleLowerCase("ru");}
+function popularity(game){
+  const buckets={"20k+":8,"5k+":7,"1k+":6,"500+":5,"100+":4,"50+":3,"10+":2,"<10":1};
+  return (buckets[game.reviews_bucket]||0)*10000000+(game.positive||0);
+}
 function getFilteredCatalog(){
   const q=normalizedString(el("catalog-search").value).trim();
   const t=el("catalog-tag").value.toLowerCase(), mode=el("catalog-mode").value;
@@ -227,7 +239,7 @@ function getFilteredCatalog(){
     return true;
   });
   if(el("catalog-sort").value==="name")list.sort((a,b)=>a.name.localeCompare(b.name,"ru"));
-  else list.sort((a,b)=>(b.positive||0)-(a.positive||0)||a.name.localeCompare(b.name,"ru"));
+  else list.sort((a,b)=>popularity(b)-popularity(a)||a.name.localeCompare(b.name,"ru"));
   return list;
 }
 function renderCatalog(){
