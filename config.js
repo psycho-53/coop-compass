@@ -1,5 +1,5 @@
-// В этом файле только публичные параметры Supabase. Не добавляйте service_role или секреты.
+// Здесь только публичные параметры Supabase. Никогда не добавляйте service_role или secret key.
 window.COOP_CONFIG = {
   supabaseUrl: 'https://xczypxwokgbaytxcgvae.supabase.co',
-  supabasePublishableKey: ''
+  supabasePublishableKey: 'sb_publishable_B32VEwEx2e8PYWUfwogyEQ_YXepfThU'
 };
