@@ -1,0 +1,39 @@
+name: Refresh Steam co-op catalog
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '15 4 * * 3'
+  push:
+    paths:
+      - 'scripts/sync_catalog.py'
+      - '.github/workflows/sync-catalog.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: catalog-refresh
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - name: Fetch SteamSpy catalog
+        run: python3 scripts/sync_catalog.py
+      - name: Update published catalog
+        run: |
+          if ! git diff --quiet -- data/catalog.json; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add data/catalog.json
+            git commit -m "Update cooperative Steam catalog"
+            git push
+          else
+            echo "Catalog unchanged."
+          fi
