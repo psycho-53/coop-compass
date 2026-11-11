@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""Refresh a static cooperative Steam catalog from SteamSpy's public community tags.
+"""Create a static catalog of Steam cooperative games for GitHub Pages.
 
-No API key required. The file contains games and tags, NOT anyone's Steam library.
-SteamSpy is a third-party source; online/local tags are hints, not verified capabilities.
+Sources:
+  imho.run/datasets/steam-coop-games-all.json  CC BY 4.0; credit and link required.
+  steamspy.com/api.php (third-party community tags, 1 req/sec).
+No user library or Steam credentials are fetched. The feed may include false positives;
+always verify the Steam store before buying.
 """
 import datetime as dt
 import json
@@ -11,106 +14,103 @@ import time
 import urllib.parse
 import urllib.request
 
-ROOT = pathlib.Path(__file__).resolve().parents[1]
-DEST = ROOT / "data" / "catalog.json"
-TAG_REQUESTS = ("Co-op", "Online Co-Op", "Local Co-Op", "Split Screen", "Remote Play Together")
-USER_AGENT = "CoopCompassCatalogBot/1.0 (+https://github.com/psycho-53/coop-compass)"
+ROOT=pathlib.Path(__file__).resolve().parents[1]
+DEST=ROOT/"data"/"catalog.json"
+IMHO="https://imho.run/datasets/steam-coop-games-all.json"
+TAGS=("Co-op","Online Co-Op","Local Co-Op","Split Screen","Remote Play Together")
+HEADERS={"User-Agent":"CoopCompassCatalogBot/1.1 (https://github.com/psycho-53/coop-compass)"}
 
+def get_json(url):
+    with urllib.request.urlopen(urllib.request.Request(url,headers=HEADERS),timeout=65) as response:
+        return json.load(response)
 
-def fetch(tag):
-    query = urllib.parse.urlencode({"request": "tag", "tag": tag})
-    req = urllib.request.Request("https://steamspy.com/api.php?" + query, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=45) as response:
-        result = json.load(response)
-    if not isinstance(result, dict) or not result:
-        raise RuntimeError("SteamSpy returned empty or invalid result for " + tag)
-    return result
-
-
-def normalize(item, source_tag):
-    try:
-        appid = int(item.get("appid", 0))
-    except (ValueError, TypeError):
-        return None
-    name = str(item.get("name") or "").strip()
-    if appid < 1 or not name or appid == 999999:
-        return None
-    votes = item.get("tags") or {}
-    if not isinstance(votes, dict):
-        votes = {}
-    ordered = sorted(votes.items(), key=lambda entry: int(entry[1]) if str(entry[1]).isdigit() else 0, reverse=True)
-    tags = [str(key) for key, _ in ordered[:60] if isinstance(key, str)]
-    if source_tag not in tags:
-        tags.append(source_tag)
-    genre = item.get("genre")
-    genres = [part.strip() for part in str(genre or "").split(",") if part.strip()]
-    def positive_int(value):
-        try:
-            return max(0, int(value or 0))
-        except (ValueError, TypeError):
-            return 0
-    online = True if "Online Co-Op" in tags else None
-    local = True if any(t in tags for t in ("Local Co-Op", "Split Screen")) else None
-    return {
-        "appid": appid, "name": name[:170], "tags": tags, "genres": genres,
-        "mode_online": online, "mode_local": local, "description": "",
-        "positive": positive_int(item.get("positive")),
-        "negative": positive_int(item.get("negative")),
-        "source": "steamspy"
-    }
-
+def as_int(v):
+    try:return max(0,int(v or 0))
+    except (TypeError,ValueError):return 0
 
 def main():
-    previous = json.loads(DEST.read_text(encoding="utf-8")) if DEST.exists() else {"games": []}
-    seed = {int(item["appid"]): item for item in previous.get("games", []) if item.get("source") == "seed"}
-    found = {}
-    failures = []
-    for tag in TAG_REQUESTS:
-        if found:
-            time.sleep(1.4)  # Public SteamSpy API asks callers to stay below 1 request/sec
-        try:
-            items = fetch(tag)
-        except Exception as exc:
-            failures.append(str(tag) + ": " + str(exc))
+    old=json.loads(DEST.read_text(encoding="utf-8")) if DEST.exists() else {"games":[]}
+    seeds={int(g["appid"]):g for g in old.get("games",[]) if g.get("source")=="seed"}
+    payload=get_json(IMHO)
+    rows=payload.get("rows")
+    if not isinstance(rows,list) or len(rows)<1000:
+        raise RuntimeError("Co-op dataset missing or incomplete; previous file preserved")
+    games={}
+    for row in rows:
+        appid=as_int(row.get("appid"))
+        name=str(row.get("name") or "").strip()
+        mode=row.get("mode")
+        if appid<1 or not name or mode not in ("online","local","both"):
             continue
-        for value in items.values():
-            if not isinstance(value, dict):
+        games[appid]={
+            "appid":appid,"name":name[:180],"tags":[],"genres":[],
+            "mode_online":mode in ("online","both"),
+            "mode_local":mode in ("local","both"),
+            "description":"","positive":0,"negative":0,
+            "reviews_bucket":str(row.get("reviews_bucket") or ""),
+            "source":"imho"
+        }
+    print("imho.ru co-op games:",len(games),flush=True)
+    for tag in TAGS:
+        time.sleep(1.3)
+        url="https://steamspy.com/api.php?"+urllib.parse.urlencode({"request":"tag","tag":tag})
+        try:
+            feed=get_json(url)
+        except Exception as exc:
+            print("SteamSpy tag unavailable:",tag,exc,flush=True)
+            continue
+        if not isinstance(feed,dict):
+            continue
+        for value in feed.values():
+            if not isinstance(value,dict):
                 continue
-            entry = normalize(value, tag)
-            if not entry:
+            appid=as_int(value.get("appid"))
+            if not appid:
                 continue
-            appid = entry["appid"]
-            if appid in found:
-                current = found[appid]
-                current["tags"] = list(dict.fromkeys(current["tags"] + entry["tags"]))
-                current["mode_online"] = current["mode_online"] or entry["mode_online"]
-                current["mode_local"] = current["mode_local"] or entry["mode_local"]
-            else:
-                found[appid] = entry
-        print("Tag:", tag, "unique games:", len(found), flush=True)
-    if len(found) < 100:
-        raise RuntimeError("Too few SteamSpy games: " + str(len(found)) + "; old catalog preserved. " + "; ".join(failures))
-    for appid, entry in seed.items():
-        if appid not in found:
-            found[appid] = entry
-        elif entry.get("description"):
-            found[appid]["description"] = entry["description"]
-    for entry in found.values():
-        tags = set(entry["tags"])
-        if entry["mode_online"] is None and "Online Co-Op" in tags:
-            entry["mode_online"] = True
-        if entry["mode_local"] is None and any(t in tags for t in ("Local Co-Op", "Split Screen")):
-            entry["mode_local"] = True
-    games = sorted(found.values(), key=lambda x: (-x.get("positive", 0), x["name"].casefold()))[:6500]
-    output = {
-        "updated_at": dt.datetime.now(dt.timezone.utc).date().isoformat(),
-        "source": "SteamSpy community tag API; not official Valve metadata",
-        "games": games
+            name=str(value.get("name") or "").strip()
+            if appid not in games:
+                if not name:continue
+                games[appid]={
+                    "appid":appid,"name":name[:180],"tags":[],"genres":[],
+                    "mode_online":None,"mode_local":None,
+                    "description":"","positive":0,"negative":0,
+                    "reviews_bucket":"","source":"steamspy"
+                }
+            g=games[appid]
+            voted=value.get("tags") if isinstance(value.get("tags"),dict) else {}
+            sorted_tags=sorted(voted.items(),key=lambda kv:as_int(kv[1]),reverse=True)
+            for k,_ in sorted_tags[:75]:
+                if isinstance(k,str) and k not in g["tags"]:
+                    g["tags"].append(k)
+            if tag not in g["tags"]:g["tags"].append(tag)
+            for cat in str(value.get("genre") or "").split(","):
+                cat=cat.strip()
+                if cat and cat not in g["genres"]:g["genres"].append(cat)
+            g["positive"]=max(g["positive"],as_int(value.get("positive")))
+            g["negative"]=max(g["negative"],as_int(value.get("negative")))
+            if g["mode_online"] is None and "Online Co-Op" in g["tags"]:g["mode_online"]=True
+            if g["mode_local"] is None and any(t in g["tags"] for t in ("Local Co-Op","Split Screen")):g["mode_local"]=True
+        print("Enriched tag:",tag,"total:",len(games),flush=True)
+    for appid,seed in seeds.items():
+        if appid not in games:
+            games[appid]=seed
+        else:
+            g=games[appid]
+            g["description"]=seed.get("description","")
+            for tag in seed.get("tags",[]):
+                if tag not in g["tags"]:g["tags"].append(tag)
+    if len(games)<1000:
+        raise RuntimeError("Catalog too small; previous data preserved")
+    ranked={"20k+":8,"5k+":7,"1k+":6,"500+":5,"100+":4,"50+":3,"10+":2,"<10":1}
+    output={
+        "updated_at":dt.datetime.now(dt.timezone.utc).date().isoformat(),
+        "source":"imho.run CC BY 4.0 (co-op classification); SteamSpy (community tags)",
+        "attribution":"https://imho.run/datasets",
+        "games":sorted(games.values(),key=lambda g:(-ranked.get(g.get("reviews_bucket"),0),-g.get("positive",0),g["name"].casefold()))
     }
-    DEST.parent.mkdir(parents=True, exist_ok=True)
-    DEST.write_text(json.dumps(output, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8")
-    print("Saved", len(games), "games to", DEST, "errors:", failures)
+    DEST.parent.mkdir(parents=True,exist_ok=True)
+    DEST.write_text(json.dumps(output,ensure_ascii=False,separators=(",",":"))+"\n",encoding="utf-8")
+    print("Saved",len(output["games"]),"games to",DEST)
 
-
-if __name__ == "__main__":
+if __name__=="__main__":
     main()
